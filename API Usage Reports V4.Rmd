@@ -1,0 +1,500 @@
+---
+title: "API Summary Report"
+output: html_document
+params:
+  mindate: 'NA'
+  maxdate: 'NA'
+  data_source: 'all'
+  user: 'all'
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+library(auditR)
+library(tidyverse)
+library(lubridate)
+library(DT)
+library(hms)
+library(echarts4r)
+library(magrittr)
+library(knitr)
+library(formattable)
+library(echarty)
+
+df <- get_api_logs(env = 'prod')
+
+df$attributes.transaction.start_datetime <- as_datetime(df$attributes.transaction.start_datetime)
+
+df$attributes.transaction.end_datetime <- as_datetime(df$attributes.transaction.end_datetime)
+
+df$time_to_transmit_in_secs <- difftime(df$attributes.transaction.end_datetime, df$attributes.transaction.start_datetime)
+  
+
+#Getting CDC vs non-CDC
+#100 and 101 = CDC, all else = non-CDC
+#Merge user id of get_userbase with df to get sites
+
+sites <- get_userbase()
+
+df <- merge(df, sites, by.x = "user_id", by.y = "Login", all.x = TRUE)
+
+df$cdc <- ifelse(df$Site_ID == 100 | df$Site_ID == 101, "CDC", "Non-CDC")
+
+df$cdc <- ifelse(df$user_id == "anonymous", "Unknown", df$cdc)
+
+#Following parameters
+if (params$mindate != 'NA'){
+  df <- df %>% 
+    filter(attributes.transaction.start_datetime >= params$mindate)
+}
+
+if (params$maxdate != 'NA'){
+  df <- df %>% 
+    filter(attributes.transaction.start_datetime <= params$maxdate)
+}
+
+
+ if (!("all" %in% params$data_source)) {
+   df <- df %>% 
+     filter(attributes.params$datasource %in% params$data_source)
+ }
+
+if (!("all" %in% params$user)) {
+   df <- df %>% 
+     filter(user_id %in% params$user)
+ }
+
+
+#Saving initial df as df_raw
+df_raw <- df
+
+#Turning usual df into successful requests only
+df <- df %>% 
+  filter(attributes.transaction.status_code >= 200 & attributes.transaction.status_code <= 299)
+
+
+#Getting basic one-column tables for narrative
+app_names <- df %>%
+  group_by(attributes.params.datasource) %>% 
+  summarise(raw_requests = n())
+
+names(app_names) <- c("Data Source", "Raw Requests")
+
+user_ids <- df %>% 
+  group_by(user_id) %>% 
+  summarise(raw_requests = n())
+
+names(user_ids) <- c("User ID", "Raw Requests")
+```
+
+
+*Report generated `r format(Sys.time(), '%d %B %Y')`.*
+
+*Log records range from `r min(as_datetime(na.omit(df$attributes.transaction.start_datetime)))` to `r max(as_datetime(na.omit(df$attributes.transaction.end_datetime)))`.*
+
+This report contains user metrics for API requests from the following data sources and user IDs: 
+`r DT::datatable(app_names, filter = "top", rownames = FALSE)`  
+`r DT::datatable(user_ids, filter = "top", rownames = FALSE)` 
+
+
+```{r table, results = 'asis', echo = FALSE}
+
+summary_table <- df_raw %>% 
+  group_by(attributes.params.datasource) %>% 
+  summarise(median_time_to_transmit = median(time_to_transmit_in_secs),
+            total_requests = n())
+
+successful_table <- df_raw %>% 
+  filter(attributes.transaction.status_code >= 200 & attributes.transaction.status_code <= 299) %>% 
+  group_by(attributes.params.datasource) %>% 
+  summarise(successful_requests = n())
+
+summary_table <- merge(summary_table, successful_table, 
+                       by = "attributes.params.datasource",
+                       all = TRUE)
+
+cdc_proportion <- as.data.frame(prop.table(table(df_raw$attributes.params.datasource, df_raw$cdc),1))
+
+cdc_proportion <- subset(cdc_proportion, Var2 == "CDC", select = c(Var1, Freq))
+
+names(cdc_proportion) <- c("datasource", "freq")
+
+summary_table <- merge(summary_table, cdc_proportion, 
+                       by.x = "attributes.params.datasource",
+                       by.y = "datasource", all.x = TRUE)
+
+summary_table$median_time_to_transmit <- as_hms(summary_table$median_time_to_transmit)
+
+summary_table$freq <- round(summary_table$freq * 100, 2)
+
+summary_table$freq <- ifelse(is.na(summary_table$freq), 0, summary_table$freq)
+
+summary_table$successful_requests <- ifelse(is.na(summary_table$successful_requests), 0, summary_table$successful_requests)
+
+summary_table$total_requests <- ifelse(is.na(summary_table$total_requests), 0, summary_table$total_requests)
+
+names(summary_table) <- c("Data Source", "Median Time to Transmit", 
+                          "Total Requests", "Successful Requests",
+                          "Percent of Users CDC")
+DT::datatable(summary_table,
+              caption = "Summary Table of API Usage", 
+              rownames = FALSE,
+        selection = list(mode = "multiple",  
+                         selected = rownames(design.df)[1:nrow(design.df)]))
+
+```
+
+```{r heatmap, results = 'asis', echo = FALSE}
+df$day_of_week <- wday(
+  df$attributes.transaction.start_datetime,
+  label = TRUE,
+  abbr = TRUE
+)
+
+df$hour_of_day <- hour(
+  df$attributes.transaction.start_datetime
+)
+
+heatmap_df <- df %>% group_by(hour_of_day, day_of_week) %>% 
+  summarise(logins = n()) %>% 
+  dplyr::ungroup() %>% 
+  arrange(hour_of_day, day_of_week)
+# 
+# wdays <- c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+# hours <- 1:24
+# perms <- data.frame(expand.grid(hours, wdays))
+# names(perms) <- c("hour_of_day", "day_of_week")
+# 
+# heatmap_df <- merge(heatmap_df, perms, all = TRUE)
+
+#heatmap_df$logins <- ifelse(is.na(heatmap_df$logins), 0, heatmap_df$logins)
+
+# df$hour_of_day <- as.character(df$hour_of_day)
+
+heatmap_df <- heatmap_df %>% 
+  arrange(day_of_week, hour_of_day)
+
+#heatmap_df$day_of_week <- as.character(heatmap_df$day_of_week)
+# 
+# heatmap_df |>
+#   e_charts(day_of_week) |> 
+#   e_heatmap(hour_of_day, logins) |> 
+#   e_visual_map(logins) |> 
+#   e_title(text = "Heatmap of Successful API Requests by Day and Hour",
+#           subtext = "24 hour clock") %>% 
+#   e_tooltip(trigger = "item") 
+
+
+# #Trying ggplot
+# library(ggplot2)
+# library(plotly)
+# 
+# p <- ggplot(heatmap_df, aes(day_of_week, hour_of_day, fill= logins)) + 
+#   geom_tile() + xlab("Day of the Week") + ylab("Hour of the Day") + 
+#   ggtitle("Heatmap of Successful API Requests by Day and Hour",
+#           subtitle = "24 Hour Clock") +
+# scale_fill_gradient(low = "#ece75f",
+#                     high = "#610c04",
+#                     guide = "colorbar")
+# 
+# ggplotly(p, tooltip = "all")
+
+
+#echarts
+heatmap_df$day_of_week <- as.character(heatmap_df$day_of_week)
+
+heatmap_df |> 
+  distinct(hour_of_day, day_of_week, .keep_all=TRUE) |>
+  ec.init(
+
+	title= list(text= "Heatmap of Successful API Requests by Day and Hour"),
+
+	series= list(list(type= 'heatmap')),
+
+	xAxis= list(type= 'category', data= c('Mon','Tue','Wed','Thu','Fri','Sat','Sun')),
+
+	yAxis= list(min= min(heatmap_df$hour_of_day)-1, name= 'hours', interval= 1),
+
+	visualMap= list(calculable= TRUE, max= 100, 
+
+						 orient= 'horizontal', bottom= 'bottom', left='middle', align= 'right', 
+
+						 inRange= list(color= c('yellow','red'))),
+
+	tooltip= list(trigger= "item"))
+```
+
+
+```{r wordcloud, results = 'asis', echo = FALSE}
+wordcloud <- as.data.frame(table(df$attributes.params.datasource))
+
+wordcloud |> 
+  e_color_range(Freq, color) |> 
+  e_charts() |> 
+  e_cloud(Var1, Freq, color, shape = "circle") |> 
+  e_title("Wordcloud of Data Sources",
+          subtext = "Successful Requests Only") %>% 
+  e_tooltip(trigger = "item")
+
+
+#Matching horizontal bar chart
+datasource <- df %>% 
+  group_by(attributes.params.datasource) %>% 
+  summarise(requests = n()) %>% 
+  mutate(datasource = "Requests") %>% 
+  ungroup()
+
+datasource |>
+  group_by(attributes.params.datasource) |>
+  e_charts(datasource, reorder = FALSE) |>
+  e_bar(requests) |>
+  e_title("Successful Requests by Data Source")|>
+  e_legend(
+      orient = 'horizontal', 
+      right = 0, 
+      top = 25,
+      scroll = TRUE
+    ) %>% 
+    e_grid(left = 75, top = 120)%>% 
+  e_tooltip(trigger = "item") %>% 
+  e_flip_coords()
+
+
+```
+
+```{r piecharts, results = 'asis', echo = FALSE}
+get_only <- df %>% 
+  filter(attributes.transaction.status_code == 200)
+
+get_only$attributes.params.csv <- ifelse(is.na(get_only$attributes.params.csv), "false", get_only$attributes.params.csv)
+
+csv_table <- as.data.frame(table(get_only$attributes.params.csv, useNA = "ifany"))
+
+csv_table <- csv_table %>% 
+  mutate(percent = Freq / sum(Freq)) %>% 
+  mutate(type = case_when(
+  Var1 == "true" ~ "CSV",
+  Var1 == "false" ~ "JSON"
+))
+
+csv_table |>
+  e_charts(type) |> 
+  e_pie(percent, radius = c("50%", "70%")) |> 
+  e_title("Proportion of CSV to JSON format") |>
+  e_legend(
+      orient = 'vertical', 
+      right = 0, 
+      top = 0,
+      scroll = TRUE
+    )
+
+```
+
+```{r boxplots, results = 'asis', echo = FALSE}
+
+js_to_hms <- htmlwidgets::JS('function (value) {
+  var d = new Number(value);
+  var h = Math.floor(d/3600);
+  var m = Math.floor(d % 3600 / 60);
+  var s = Math.floor(d % 3600 % 60);
+  
+
+  
+  var hDisplay = h > 0 ? h + (":") : "00:";
+  var mDisplay = m > 0 ? m + (":") : "00:";
+  var sDisplay = s > 0 ? s : "00";
+  
+  return hDisplay + mDisplay + sDisplay; 
+}')
+
+#boxplot of time to transmit by app
+
+df %>% 
+
+  group_by(attributes.params.datasource) |>
+  e_charts() |>
+  e_boxplot(time_to_transmit_in_secs, outliers = TRUE
+        ) %>% 
+  e_title("Time to Transmit by Data Source") %>% 
+  e_y_axis(
+   time_to_transmit_in_secs, 
+     axisLabel = list(
+       formatter = js_to_hms
+     ),
+   margin = 12
+    )%>% 
+  e_tooltip(trigger = "item") |>
+  e_flip_coords()
+
+
+#Boxplot of time to transmit by method
+
+df |>
+  group_by(method) |>
+  e_charts() |>
+  e_boxplot(time_to_transmit_in_secs, outliers = TRUE
+        ) %>% 
+  e_title("Time to Transmit by Method",
+          subtext = "Successful Requests Only") %>% 
+  e_y_axis(
+   time_to_transmit_in_secs, 
+     axisLabel = list(
+       formatter = js_to_hms
+     ),
+   margin = 12
+    )%>% 
+  e_tooltip(trigger = "item")
+
+#Boxplot of number of requests per user
+
+requests_per_user <- df %>% 
+  group_by(user_id) %>% 
+  summarise(requests = n()) %>% 
+  ungroup() %>% 
+  select(requests)
+
+
+# requests_per_user |>
+#   e_charts(width = 500) |>
+#   e_boxplot(requests, outliers = TRUE) %>% 
+#   e_title("Successful Requests Per User") %>% 
+#   e_tooltip(trigger = "item") %>% 
+#   e_x_axis(show = FALSE)# %>% 
+#   #e_flip_coords()
+  
+#Minimum
+min.rt <- min(requests_per_user$requests, na.rm = TRUE)
+
+# Lower  Hinge:
+RT <- sort(requests_per_user$requests)
+lower.rt <- RT[1:round(length(RT)/2)] 
+lower.h.rt <- median(lower.rt)
+
+# Median
+median.rt <- median(requests_per_user$requests, na.rm = TRUE)
+
+# Upper Hinge
+RT <- sort(requests_per_user$requests)
+upper.rt <- RT[round((length(RT)/2)+1):length(RT)] 
+upper.h.rt <- median(upper.rt)
+
+# Max
+max.rt <- max(requests_per_user$requests, na.rm = TRUE)
+
+fivenumber <- cbind(min.rt, lower.h.rt,
+                    median.rt, upper.h.rt,
+                    max.rt)
+colnames(fivenumber) <- c("Min", "25th Percentile",
+                       "Median", "75th Percentile", "Max")
+
+formattable(as.data.frame(fivenumber), 
+            align = c(rep("c", NCOL(fivenumber))), 
+            caption = "Successful Requests Per User")
+```
+
+
+```{r barcharts, results = 'asis', echo = FALSE}
+request_by_week <- df %>% 
+  group_by(day_of_week) %>% 
+  count(method, day_of_week) %>% 
+  ungroup()
+
+request_by_week$day_of_week <- as.character(request_by_week$day_of_week)
+
+request_by_week |>
+  group_by(method) |>
+  e_charts(day_of_week) |>
+  e_bar(n) |>
+  e_title("Successful Request Type by Day of Week")|>
+  e_legend(
+      orient = 'vertical', 
+      right = 0, 
+      top = 0,
+      scroll = TRUE
+    ) %>% 
+    e_grid(left = 50, top = 75)%>% 
+  e_tooltip(trigger = "item")
+
+
+#Barchart of request for each user
+requests_by_user <- df %>% 
+  group_by(user_id) %>% 
+  summarise(requests = n()) %>% 
+  ungroup() %>% 
+  mutate(userid = "Requests")
+
+requests_by_user |>
+ # group_by(user_id) |>
+  e_charts(user_id) |>
+  e_bar(requests) |>
+  e_title("Successful Requests by User")|>
+  e_legend(
+      orient = 'vertical', 
+      right = 0, 
+      top = 0,
+      scroll = TRUE
+    ) %>% 
+    e_grid(left = 100, top = 75)%>% 
+  e_tooltip(trigger = "item") %>% 
+  e_flip_coords()
+```
+
+
+```{r timeseries, results = 'asis', echo = FALSE}
+
+# if (params$timeseries == "day") {
+#   df$timeseries <- lubridate::date(df$attributes.transaction.start_datetime)
+# }
+# 
+# if (params$timeseries == "hour"){
+#   df$timeseries <- lubridate::hour(df$attributes.transaction.start_datetime)
+#   df$timeseries <- as_datetime(paste0(df$start_date, " ", df$timeseries, ":00:00"))
+# }
+
+df_raw$start_date <- lubridate::date(df_raw$attributes.transaction.start_datetime)
+
+timeseries <- df_raw  %>% 
+  group_by(start_date) %>% 
+  summarise(requests = n()) %>% 
+  ungroup()
+
+timeseries |>
+  e_charts(x = start_date) %>% 
+  e_datazoom(
+    type = "slider", 
+    toolbox = FALSE,
+    bottom = -5
+  ) %>% 
+  e_title("Time Series of Raw Requests",
+          subtext = "By Day") %>% 
+  e_x_axis(start_date, axisPointer = list(show = TRUE)) %>% 
+  e_bar(requests)%>% 
+  e_tooltip(trigger = "item")
+
+
+df_raw$start_hour <- lubridate::hour(df_raw$attributes.transaction.start_datetime)
+df_raw$start_hour <- as_datetime(paste0(df_raw$start_date, " ", df_raw$start_hour, ":00:00"))
+  
+timeseries <- df_raw  %>% 
+  group_by(start_hour) %>% 
+  summarise(requests = n()) %>% 
+  ungroup()
+
+
+  timeseries |>
+  e_charts(x = start_hour) %>% 
+  e_datazoom(
+    type = "slider", 
+    toolbox = FALSE,
+    bottom = -5
+  ) %>% 
+  e_title("Time Series of Raw Requests",
+          subtext = "By Hour") %>% 
+  e_x_axis(start_hour, axisPointer = list(show = TRUE)) %>% 
+  e_bar(requests)%>% 
+  e_tooltip(trigger = "item")
+```
+
+
