@@ -7,64 +7,7 @@ library(dplyr)
 library(plotly)
 library(scales)
 
-cubes_hitter <- function(query){
-  
-  con <- dbConnect(odbc::odbc(),
-                   Driver = "FreeTDS",
-                   Server = "datacubes.biosense.wan",
-                   Port = 1433,
-                   UID = "dashboards",
-                   PWD = "#d7yit6Wp+mT")
-  
-  table <- dbGetQuery(con, query)
-  
-  return(table)
-  
-}
-
-
-
-# QUERIES ----
-
-skey <- 4 # Arizona's Skey - find more Skey values with: SELECT * FROM [BIOSENSE_DW_DB].[dbo].[Dim_Site]
-
-qry <- paste0("SELECT * FROM [BIOSENSE_DW_DB].[dbo].[Rpt_Table_Essence_Visit_Count]")
-
-essence <- cubes_hitter(qry)
-
-qry <- paste0("SELECT Parent_Organization,
-                      Site_ID,
-                      Facility_Type,
-                      C_BioSense_Facility_ID,
-                      Feed_Name,
-                      Vendor_Name,
-                      Facility_Name,
-                      Facility_Status,
-                      Record_Status
-               FROM [Master_Profile].[dbo].[Facility_Master]
-               WHERE Primary_Facility = 'Y'")
-
-dim_all <- cubes_hitter(qry)
-
-qry <- paste0("SELECT * FROM [BIOSENSE_DW_DB].[dbo].[RPT_Table_Processed_Visit_Count] ",
-              "WHERE Site_Skey = '", skey, "'")
-
-proc <- cubes_hitter(qry) %>% 
-  left_join(dim_all, 
-            by = c("Site_ID", 
-                   "Facility_Name", 
-                   "Feed_Name"))
-
-qry <- paste0("SELECT * ",
-              "FROM [BIOSENSE_DW_DB].[dbo].[RPT_Table_Operations] ",
-              "WHERE Site_Skey = ", 4," and (Date) >= GETDATE() - 122")
-
-dataflow_all <- cubes_hitter(qry)
-
-dataflow <- merge(x = dim_all, 
-                  y = dataflow_all, 
-                  by = c("Facility_Name", "Site_ID"))
-
+c
 
 
 # PLOT ----
