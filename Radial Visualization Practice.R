@@ -12,58 +12,6 @@ library(sunburstR)
 library(treemapify)
 library(ggplotify)
 
-#Functions from global.R
-
-`%!in%` <- Negate(`%in%`)
-
-cubes_hitter <- function(query){
-  
-  con <- dbConnect(odbc::odbc(),
-                   Driver = "FreeTDS",
-                   Server = "datacubes.biosense.wan",
-                   Port = 1433,
-                   UID = "dashboards",
-                   PWD = "#d7yit6Wp+mT")
-  
-  table <- dbGetQuery(con, query)
-  
-  return(table)
-  
-}
-
-get_skey <- function(x, from_name = TRUE){
-  
-  if (from_name == TRUE){
-    
-    index <- which(site_info()$Site_Short_Name %in% x)
-    
-    output <- site_info()$Site_Skey[index]
-    
-  }
-  
-  if (from_name == FALSE){
-    
-    index <- which(site_info()$Site_ID %in% x)
-    
-    output <- site_info()$Site_Skey[index]
-    
-  }
-  
-  return(output)
-  
-}
-
-completeness_summary <- function(skey, db = "BIOSENSE_DW_DB"){
-  
-  df <- summary_query(db = db, 
-                      skey = skey, 
-                      table = "RPT_Table_Completeness")
-  
-  merge(x = df, 
-        y = dim_all())
-  
-}
-
 
 
 #Data import
